@@ -57,8 +57,26 @@ table{width:max-content;min-width:100%;border-collapse:collapse;table-layout:aut
 @media(max-width:850px){.summary{grid-template-columns:repeat(2,1fr)}.trow{grid-template-columns:105px 1fr}.tdate{grid-column:2;text-align:left}.axis{margin:0 0 10px 119px}}
 @media(max-width:520px){body{padding:12px 9px}.header{padding:19px}.summary{grid-template-columns:1fr 1fr;gap:9px}.metric{padding:14px}.metric .value{font-size:21px}.grid{grid-template-columns:1fr}.trow{grid-template-columns:1fr;gap:5px}.tdate{grid-column:1}.axis{display:flex;margin:0 0 10px 0;height:44px;font-size:9px}.today-axis-label{font-size:9px}}
 @media print{body{background:#fff;padding:0}.header,.metric,.card,.timeline-wrap,.table-wrap{box-shadow:none;border:1px solid #e5eaf0;break-inside:avoid}.controls{display:none}.grid{grid-template-columns:repeat(2,1fr)}}
-</style></head><body><main class="container">
-<header class="header"><div><h1>🏗️ Свод ДМС</h1><div class="subtitle">Объекты • готовность • сроки • подрядчики</div></div><div class="date">8 объектов</div></header>
+
+.auth-gate{position:fixed;inset:0;z-index:9999;display:flex;align-items:center;justify-content:center;padding:20px;background:linear-gradient(135deg,#eaf1f8,#f7f9fc)}
+.auth-card{width:min(100%,390px);background:#fff;border-radius:20px;padding:30px;box-shadow:0 18px 60px #102b4520;text-align:center}
+.auth-card h2{margin:0 0 8px;font-size:23px;color:#18344b}.auth-card p{margin:0 0 20px;color:#68798a}
+.auth-card input{width:100%;padding:13px 14px;border:1px solid #dce4ec;border-radius:10px;font:inherit;margin-bottom:12px}
+.auth-card button{width:100%;border:0;border-radius:10px;padding:13px;background:#1e6f9f;color:#fff;font:600 14px inherit;cursor:pointer}
+.auth-card button:disabled{opacity:.6;cursor:wait}.auth-error{min-height:20px;color:#b93832;font-size:12px;margin-top:12px}
+#logoutBtn{border:1px solid #dce4ec;background:#fff;color:#405367;border-radius:9px;padding:8px 12px;cursor:pointer;font:inherit}
+</style></head><body>
+<section class="auth-gate" id="authGate">
+  <form class="auth-card" id="loginForm">
+    <h2>Свод ДМС</h2>
+    <p>Введите общий пароль для доступа к своду</p>
+    <input id="sharedPassword" type="password" autocomplete="current-password" placeholder="Общий пароль" required>
+    <button id="loginBtn" type="submit">Войти</button>
+    <div class="auth-error" id="authError"></div>
+  </form>
+</section>
+<main class="container" id="appShell" style="display:none">
+<header class="header"><div><h1>🏗️ Свод ДМС</h1><div class="subtitle">Объекты • готовность • сроки • подрядчики</div></div><div style="display:flex;align-items:center;gap:12px"><div class="date">8 объектов</div><button id="logoutBtn" type="button">Выйти</button></div></header>
 <section class="summary" id="summary"></section>
 <div class="section-title">📌 Объекты и текущая готовность</div>
 <div class="legend">
@@ -80,24 +98,66 @@ let cloudClient=null, cloudTimer=null, applyingRemote=false, clientId='';
 function setSaveStatus(message,color){const el=document.getElementById('saveStatus');if(el){el.textContent=message;if(color)el.style.color=color}}
 function persistData(){if(applyingRemote)return true;setSaveStatus('Сохранение…','#9a680d');clearTimeout(cloudTimer);cloudTimer=setTimeout(saveToCloud,650);return true}
 async function saveToCloud(){if(!cloudClient)return;try{const {error}=await cloudClient.from('dashboard_state').upsert({id:'main',data:DATA,updated_at:new Date().toISOString(),updated_by:clientId});if(error)throw error;setSaveStatus('Все изменения сохранены','#197747')}catch(e){console.error(e);setSaveStatus('Ошибка облачного сохранения — проверьте подключение','#b93832')}}
-async function initCloud(){
- const cfg=window.DMS_CONFIG||{};
- if(!cfg.url||!cfg.anonKey||!window.supabase){setSaveStatus('Требуется настройка облачного подключения','#b93832');return}
- try{
-  cloudClient=window.supabase.createClient(cfg.url,cfg.anonKey);
+
+const SHARED_LOGIN_EMAIL = 'svod-dms-access@example.com';
+async function startCloudData(){
   clientId=(window.crypto&&crypto.randomUUID)?crypto.randomUUID():'client-'+Date.now()+'-'+Math.random().toString(16).slice(2);
   const {data:row,error}=await cloudClient.from('dashboard_state').select('data,updated_by').eq('id','main').maybeSingle();
   if(error)throw error;
   if(row&&Array.isArray(row.data)){DATA.splice(0,DATA.length,...row.data)}
-  else {const {error:insertError}=await cloudClient.from('dashboard_state').insert({id:'main',data:DATA,updated_at:new Date().toISOString(),updated_by:clientId});if(insertError&&insertError.code!=='23505')throw insertError}
+  else {
+    const {error:insertError}=await cloudClient.from('dashboard_state').insert({id:'main',data:DATA,updated_at:new Date().toISOString(),updated_by:clientId});
+    if(insertError&&insertError.code!=='23505')throw insertError;
+  }
+  document.getElementById('authGate').style.display='none';
+  document.getElementById('appShell').style.display='';
   renderAll(false);
   setSaveStatus('Общая база подключена · автосохранение включено','#197747');
   cloudClient.channel('dms-shared-dashboard').on('postgres_changes',{event:'UPDATE',schema:'public',table:'dashboard_state',filter:'id=eq.main'},payload=>{
-   if(payload.new?.updated_by===clientId||!Array.isArray(payload.new?.data))return;
-   clearTimeout(cloudTimer);applyingRemote=true;DATA.splice(0,DATA.length,...payload.new.data);renderAll(false);applyingRemote=false;setSaveStatus('Получены обновления от другого пользователя','#197747');
-  }).subscribe(status=>{if(status==='CHANNEL_ERROR'||status==='TIMED_OUT')setSaveStatus('Нет связи с синхронизацией — проверьте интернет','#b93832')});
- }catch(e){console.error(e);setSaveStatus('Не удалось подключиться к облаку: '+(e.message||'ошибка настройки'),'#b93832')}
+    if(payload.new?.updated_by===clientId||!Array.isArray(payload.new?.data))return;
+    clearTimeout(cloudTimer);applyingRemote=true;DATA.splice(0,DATA.length,...payload.new.data);renderAll(false);applyingRemote=false;
+    setSaveStatus('Получены обновления от другого пользователя','#197747');
+  }).subscribe(status=>{
+    if(status==='CHANNEL_ERROR'||status==='TIMED_OUT')setSaveStatus('Нет связи с синхронизацией — проверьте интернет','#b93832');
+  });
 }
+async function initAuth(){
+  const cfg=window.DMS_CONFIG||{};
+  if(!cfg.url||!cfg.anonKey||!window.supabase){
+    document.getElementById('authError').textContent='Не настроено подключение к базе данных.';
+    return;
+  }
+  cloudClient=window.supabase.createClient(cfg.url,cfg.anonKey);
+  const form=document.getElementById('loginForm'), button=document.getElementById('loginBtn'), errorBox=document.getElementById('authError');
+  form.addEventListener('submit',async e=>{
+    e.preventDefault();errorBox.textContent='';button.disabled=true;button.textContent='Проверка…';
+    try{
+      const password=document.getElementById('sharedPassword').value;
+      const {error}=await cloudClient.auth.signInWithPassword({email:SHARED_LOGIN_EMAIL,password});
+      if(error)throw error;
+      document.getElementById('sharedPassword').value='';
+    }catch(err){errorBox.textContent='Неверный пароль или ошибка входа. Проверьте пароль и попробуйте ещё раз.'}
+    finally{button.disabled=false;button.textContent='Войти'}
+  });
+  document.getElementById('logoutBtn').addEventListener('click',async()=>{
+    await cloudClient.auth.signOut();
+    document.getElementById('appShell').style.display='none';
+    document.getElementById('authGate').style.display='flex';
+  });
+  const {data:{session},error}=await cloudClient.auth.getSession();
+  if(error)throw error;
+  if(session){try{await startCloudData()}catch(err){console.error(err);document.getElementById('authError').textContent='Не удалось загрузить свод. Проверьте настройки доступа.'}}
+  cloudClient.auth.onAuthStateChange(async(event,sessionNow)=>{
+    if(event==='SIGNED_IN'&&sessionNow){
+      try{await startCloudData()}catch(err){console.error(err);document.getElementById('authError').textContent='Не удалось загрузить свод. Проверьте настройки доступа.'}
+    }
+    if(event==='SIGNED_OUT'){
+      document.getElementById('appShell').style.display='none';
+      document.getElementById('authGate').style.display='flex';
+    }
+  });
+}
+
 
 const rub=n=>new Intl.NumberFormat('ru-RU',{maximumFractionDigits:0}).format(Number(n)||0)+' ₽';
 const mln=n=>((Number(n)||0)/1e6).toLocaleString('ru-RU',{maximumFractionDigits:2})+' млн ₽';
@@ -131,5 +191,5 @@ document.getElementById('tbody').addEventListener('change',e=>{const el=e.target
 document.getElementById('tbody').addEventListener('click',e=>{const i=e.target.dataset.delete;if(i!==undefined&&confirm('Удалить объект из свода?')){DATA.splice(Number(i),1);renderAll()}});
 document.getElementById('addRow').addEventListener('click',()=>{DATA.push({num:DATA.length+1,name:'Новый объект',stage:'Проект',progress:0,start:'',end:'',amount:0,rp:'',design:[],build:[]});renderAll();const inputs=[...document.querySelectorAll('#tbody input[data-k="name"]')];inputs[inputs.length-1]?.focus()});
 ['search','stage','rp'].forEach(id=>document.getElementById(id).addEventListener(id==='search'?'input':'change',renderTable));
-initCloud();setInterval(renderTimeline,60000);
+initAuth().catch(e=>{console.error(e);document.getElementById('authError').textContent='Ошибка подключения. Попробуйте обновить страницу.'});setInterval(()=>{if(document.getElementById('appShell').style.display!=='none')renderTimeline()},60000);
 </script></body></html>
