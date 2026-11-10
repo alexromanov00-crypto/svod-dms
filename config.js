@@ -1,5 +1,5 @@
-// Публичные параметры подключения Supabase. Publishable key предназначен для браузера.
+// Публичные параметры подключения Supabase
 window.DMS_CONFIG = {
-  url: 'https://sqmwwdaoramsiaxtibku.supabase.co',
+  url: 'https://sqmwvdaoramsiaxtibku.supabase.co',
   anonKey: 'sb_publishable_ZxLP1VLj1w_yOnIOfoL36w_-ree7r0y'
 };
